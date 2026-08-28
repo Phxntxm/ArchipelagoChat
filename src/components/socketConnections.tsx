@@ -41,9 +41,14 @@ export interface SocketConnectionRef {
 
 const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
   (props, ref) => {
-    const socketUrl = `ws://${props.url}:${props.port}`
-    const { sendMessage: sendCommand, lastMessage, readyState, getWebSocket } = useWebSocket(socketUrl)
-    const {slot} = props
+    const socketUrl = `wss://${props.url}:${props.port}`
+    const {
+      sendMessage: sendCommand,
+      lastMessage,
+      readyState,
+      getWebSocket,
+    } = useWebSocket(socketUrl)
+    const { slot } = props
 
     const handleSendMessage = (message: string) => {
       sendCommand(
@@ -56,7 +61,7 @@ const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
       )
     }
 
-    useImperativeHandle(ref, () => ({ handleSendMessage, getWebSocket,  slot}))
+    useImperativeHandle(ref, () => ({ handleSendMessage, getWebSocket, slot }))
 
     const connectionStatus = {
       [ReadyState.CONNECTING]: 'Connecting',
@@ -70,7 +75,13 @@ const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
       if (lastMessage && lastMessage.data) {
         const commands: Commands[] = JSON.parse(lastMessage.data)
         commands.forEach((cmd) =>
-          props.addCmd(cmd, props.slot, props.password, handleSendMessage, sendCommand),
+          props.addCmd(
+            cmd,
+            props.slot,
+            props.password,
+            handleSendMessage,
+            sendCommand,
+          ),
         )
       }
     }, [lastMessage])
