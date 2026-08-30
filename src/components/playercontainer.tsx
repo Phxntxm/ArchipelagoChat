@@ -9,14 +9,39 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo } from 'react'
 
 import { db, type Player } from '#/db'
-import { ConnectionStatus } from '#/utils'
 import Paper from '@mui/material/Paper'
 import TableContainer from '@mui/material/TableContainer'
 import TableSortLabel from '@mui/material/TableSortLabel'
 import { useState } from 'react'
 
+interface PlayerProgress {
+  cur_locations: number
+  total_locations: number
+  missing_locations: number
+  progress: number
+}
+
+function getPlayerProgress(player: Player): PlayerProgress {
+  const cur = player.logged_in
+    ? player.locations.filter((location) => location.found).length
+    : player.cur_locations
+  const missing = player.logged_in
+    ? player.locations.filter((location) => !location.found).length
+    : player.missing_locations
+  const total = cur + missing
+  const progress = (cur / total) * 100
+  return {
+    cur_locations: cur,
+    missing_locations: missing,
+    total_locations: total,
+    progress: progress,
+  }
+}
+
 function Status({ player }: { player: Player }) {
-  if (player.cur_checks > 0 && player.cur_checks === player.total_checks) {
+  const { cur_locations, missing_locations } = getPlayerProgress(player)
+
+  if (cur_locations > 0 && missing_locations === 0) {
     return <Typography sx={{ color: 'info.light' }}>Completed</Typography>
   } else if (player.connections > 0) {
     return (
@@ -29,10 +54,7 @@ function Status({ player }: { player: Player }) {
   }
 }
 
-interface PlayerTable {
-  id: number
-  name: string
-  status: ConnectionStatus
+type PlayerTable = Pick<Player, 'id' | 'name' | 'status'> & {
   progress: number
 }
 
@@ -61,7 +83,7 @@ function getComparator<Key extends keyof any>(
 }
 
 export default function PlayerContainer() {
-  const [order, setOrder] = useState<Order>('asc')
+  const [order, setOrder] = useState<Order>('desc')
   const [orderBy, setOrderBy] = useState<keyof PlayerTable>('progress')
   const players = useLiveQuery(() => db.player.toArray())
 
@@ -72,7 +94,15 @@ export default function PlayerContainer() {
   }
 
   const rows = useMemo(
-    () => [...(players ?? [])].sort(getComparator(order, orderBy)),
+    () =>
+      [...(players ?? [])]
+        .map((player) => {
+          return {
+            ...player,
+            ...getPlayerProgress(player),
+          }
+        })
+        .sort(getComparator(order, orderBy)),
     [order, orderBy, players],
   )
 
@@ -120,23 +150,21 @@ export default function PlayerContainer() {
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((player) => (
+          {rows.map((row) => (
             <TableRow
               hover
               tabIndex={-1}
-              key={player.id}
+              key={row.id}
               sx={{ cursor: 'pointer' }}
             >
-              <TableCell>{player.name}</TableCell>
+              <TableCell>{row.name}</TableCell>
               <TableCell>
-                <Status player={player} />
+                <Status player={row} />
               </TableCell>
               <TableCell>
-                {player.cur_checks}/{player.total_checks} ({player.progress.toFixed(2)}%)
-                <LinearProgress
-                  variant="determinate"
-                  value={(player.cur_checks / player.total_checks) * 100}
-                />
+                {row.cur_locations}/{row.total_locations} (
+                {row.progress.toFixed(2)}%)
+                <LinearProgress variant="determinate" value={row.progress} />
               </TableCell>
             </TableRow>
           ))}

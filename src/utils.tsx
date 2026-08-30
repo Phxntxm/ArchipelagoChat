@@ -1,7 +1,7 @@
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
-import type { ReactElement } from 'react'
-import { db, type Archipelago } from './db'
+import { Fragment, type ReactElement } from 'react'
+import { db, type Archipelago, type Location, type Player } from './db'
 
 enum ConnectionStatus {
   Connected,
@@ -146,6 +146,13 @@ interface Join extends PrintJSON {
   type: 'Join'
 }
 
+interface Hint extends PrintJSON {
+  found: boolean
+  item: NetworkItem
+  receiving: number
+  type: 'Hint'
+}
+
 interface LoginDetails {
   url: string
   port: number
@@ -202,6 +209,10 @@ interface CommandHandler<T extends Commands> {
 
 function isItemSend(cmd: PrintJSON): cmd is ItemSend {
   return cmd.type === 'ItemSend'
+}
+
+function isHint(cmd: PrintJSON): cmd is Hint {
+  return cmd.type === 'Hint'
 }
 
 function isDisconnect(cmd: PrintJSON): cmd is Disconnect {
@@ -279,6 +290,27 @@ function reverseRecord<T extends Record<PropertyKey, PropertyKey>>(
   ) as ReverseRecord<T>
 }
 
+async function getLocationsForGame(gameName: string): Promise<Location[]> {
+  const archipelago = await db.archipelago.get(1)
+  const game = archipelago?.games?.find((game) => game.name === gameName)
+
+  if (game) {
+    const locations = Object.entries(game.item_id_to_location).map(
+      ([key, value]) => {
+        return {
+          name: value,
+          found: false,
+          id: parseInt(key),
+        }
+      },
+    )
+
+    return locations
+  }
+
+  return []
+}
+
 function socketIdentifier(
   url: string,
   port: number | string,
@@ -286,14 +318,6 @@ function socketIdentifier(
   password: string | null,
 ) {
   return `ws://${url}:${port}@${slot}:${password ?? ''}`
-}
-
-function checksConsolidator(curChecks: number, totalChecks: number) {
-  return {
-    cur_checks: curChecks,
-    total_checks: totalChecks,
-    progress: (curChecks / totalChecks) * 100,
-  }
 }
 
 function itemColoured(item: string, flag: number) {
@@ -353,91 +377,96 @@ interface ChatMessage {
   element?: ReactElement
 }
 
-async function itemSendTypography(
-  cmd: ItemSend,
+async function getPlayer(id: number): Promise<Player> {
+  const player = await db.player.get(id)
+  assert(player !== undefined)
+  return player
+}
+
+async function typographyItemInfo(
+  cmd: PrintJSON,
   archipelago: Archipelago,
 ): Promise<ChatMessage> {
-  switch (cmd.data.length) {
-    // Found their own item
-    case 6:
-      const player = await db.player.get(cmd.receiving)
+  let player: Player
 
-      if (player === undefined)
-        throw new Error('Could not find players in game')
-      const itemName = archipelago.games?.find(
-        (game) => game.name === player.game,
-      )?.item_id_to_name[cmd.item.item]
-      const locationName = archipelago.games?.find(
-        (game) => game.name === player.game,
-      )?.item_id_to_location[cmd.item.location]
-      return {
-        element: (
-          <span>
-            <Tooltip describeChild title={player.game} placement="top">
-              <strong>{player.name}</strong>
-            </Tooltip>{' '}
-            has found their{' '}
-            {itemColoured(itemName ?? 'Unknown', cmd.item.flags)} (
-            <Typography sx={{ color: '#770e76' }} component={'span'}>
-              {locationName}
-            </Typography>
-            )
-          </span>
-        ),
-        message: `${player.name} has found their ${itemName} (${locationName})`,
+  const textParts = await Promise.all(
+    cmd.data.map(async (part) => {
+      switch (part.type) {
+        case 'player_id':
+          player = await getPlayer(parseInt(part.text))
+          return {
+            message: player.name,
+            element: (
+              <Tooltip describeChild title={player.game} placement="top">
+                <strong>{player.name}</strong>
+              </Tooltip>
+            ),
+          }
+        case 'item_id':
+          player = await getPlayer(part.player ?? -1)
+          const itemName = archipelago.games?.find(
+            (game) => game.name === player.game,
+          )?.item_id_to_name[parseInt(part.text)]
+          return {
+            message: itemName,
+            element: itemColoured(itemName ?? 'Unknown', part.flags ?? 1),
+          }
+        case 'location_id':
+          player = await getPlayer(part.player ?? -1)
+          const locationName = archipelago.games?.find(
+            (game) => game.name === player.game,
+          )?.item_id_to_location[parseInt(part.text)]
+          return {
+            message: locationName,
+            element: (
+              <Typography sx={{ color: '#770e76' }} component={'span'}>
+                {locationName}
+              </Typography>
+            ),
+          }
+        case 'hint_status':
+          return { message: '', element: <></> }
+        default:
+          return { message: part.text, element: part.text }
       }
-    // Found another person's item
-    case 8:
-      const receiver = await db.player.get(cmd.receiving)
-      const finder = await db.player.get(parseInt(cmd.data[0].text))
-      if (receiver === undefined || finder === undefined)
-        throw new Error('Could not find players in game')
-      const foundItemName = archipelago.games?.find(
-        (game) => game.name === receiver.game,
-      )?.item_id_to_name[cmd.item.item]
-      const foundLocationName = archipelago.games?.find(
-        (game) => game.name === finder.game,
-      )?.item_id_to_location[cmd.item.location]
+    }),
+  )
 
-      return {
-        element: (
-          <span>
-            <Tooltip describeChild title={finder.game} placement="top">
-              <strong>{finder.name}</strong>
-            </Tooltip>{' '}
-            sent {itemColoured(foundItemName ?? 'Unknown', cmd.item.flags)} (
-            <Typography sx={{ color: '#770e76' }} component={'span'}>
-              {foundLocationName}
-            </Typography>
-            ) to{' '}
-            <Tooltip describeChild title={receiver.game} placement="top">
-              <strong>{receiver.name}</strong>
-            </Tooltip>{' '}
-          </span>
-        ),
-        message: `${finder.name} sent ${foundItemName} (${foundLocationName}) to ${receiver.name}`,
-      }
-    default:
-      throw new Error('Could not determine print JSON type')
+  return {
+    message: textParts
+      .map((part) => part.message)
+      .filter((message) => message !== undefined && message?.length > 0)
+      .join(''),
+    element: (
+      <span>
+        {textParts.map((part, index) => (
+          <Fragment key={index}>
+            {index > 0 && ' '}
+            {part.element}
+          </Fragment>
+        ))}
+      </span>
+    ),
   }
 }
 
 export {
   assert,
-  checksConsolidator,
   ConnectionStatus,
+  getLocationsForGame,
   isChat,
   isCommand,
   isCommandResult,
   isDisconnect,
+  isHint,
   isItemSend,
   isJoin,
   isLoggedIn,
   isTagsChanged,
   isTutorial,
-  itemSendTypography,
   reverseRecord,
   socketIdentifier,
+  typographyItemInfo,
 }
 export type {
   Chat,
@@ -449,6 +478,7 @@ export type {
   ConnectionRefused,
   DataPackageCmd,
   Disconnect,
+  Hint,
   ItemSend,
   Join,
   LoggedInDetails,

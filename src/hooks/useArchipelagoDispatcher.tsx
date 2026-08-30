@@ -1,18 +1,19 @@
 import { db, type ClientGame } from '#/db'
 import {
   assert,
-  checksConsolidator,
   ConnectionStatus,
+  getLocationsForGame,
   isChat,
   isCommand,
   isCommandResult,
   isDisconnect,
+  isHint,
   isItemSend,
   isJoin,
   isTagsChanged,
   isTutorial,
-  itemSendTypography,
   reverseRecord,
+  typographyItemInfo,
   type Chat,
   type CommandHandler,
   type CommandResult,
@@ -21,11 +22,10 @@ import {
   type ConnectionRefused,
   type DataPackageCmd,
   type Disconnect,
+  type Hint,
   type ItemSend,
   type Join,
-  type NetworkItem,
   type PrintJSON,
-  type ReceivedItems,
   type RoomInfoCmd,
   type RoomUpdateCmd,
 } from '#/utils'
@@ -138,6 +138,11 @@ async function handleConnected(
   Object.entries(handler.cmd.slot_info).forEach(async ([slotId, slot]) => {
     // First check if they exist - since we connect with multiple accounts
     const existingPlayer = await db.player.get(parseInt(slotId))
+    const locations = (await getLocationsForGame(slot.game)).filter(
+      (l) =>
+        handler.cmd.checked_locations.includes(l.id) ||
+        handler.cmd.missing_locations.includes(l.id),
+    )
 
     // If they don't exist but are not the one we're connecting with, just add default info
     if (existingPlayer === undefined) {
@@ -149,13 +154,11 @@ async function handleConnected(
           logged_in: false,
           connections: 0,
           status: ConnectionStatus.Disconnected,
-          missing_locations: [],
-          checked_locations: [],
+          locations: [],
           received_items: [],
           hint_points: 0,
-          cur_checks: 0,
-          total_checks: 0,
-          progress: 100,
+          cur_locations: 0,
+          missing_locations: 0,
         })
       }
       // If they don't exist and match the one we're logging in with - fill in with command's info
@@ -167,30 +170,32 @@ async function handleConnected(
           logged_in: true,
           connections: 1,
           status: ConnectionStatus.Connected,
-          missing_locations: handler.cmd.missing_locations,
-          checked_locations: handler.cmd.checked_locations,
+          locations: locations.map((location) => {
+            const found = handler.cmd.checked_locations.includes(location.id)
+            return {
+              ...location,
+              found: found,
+            }
+          }),
           received_items: [],
           hint_points: handler.cmd.hint_points,
-          ...checksConsolidator(
-            handler.cmd.checked_locations.length,
-            handler.cmd.checked_locations.length +
-              handler.cmd.missing_locations.length,
-          ),
+          cur_locations: handler.cmd.checked_locations.length,
+          missing_locations: handler.cmd.missing_locations.length,
         })
       }
     }
     // If they do exist... AND ONLY IF IT MATCHES THE CONNECTION, update with the command's info
-    else if (slotId !== handler.cmd.slot.toString()) {
+    else if (slotId === handler.cmd.slot.toString()) {
       await db.player.update(handler.cmd.slot, {
         logged_in: true,
-        missing_locations: handler.cmd.missing_locations,
-        checked_locations: handler.cmd.checked_locations,
+        locations: locations.map((location) => {
+          const found = handler.cmd.checked_locations.includes(location.id)
+          return {
+            ...location,
+            found: found,
+          }
+        }),
         hint_points: handler.cmd.hint_points,
-        ...checksConsolidator(
-          handler.cmd.checked_locations.length,
-          handler.cmd.checked_locations.length +
-            handler.cmd.missing_locations.length,
-        ),
       })
     }
   })
@@ -198,41 +203,6 @@ async function handleConnected(
   setSuppressNextStatusCommand(true)
   setSuppressNextStatusResult(true)
   handler.sendMessage('!status')
-}
-
-async function handleReceivedItems(cmd: ReceivedItems) {
-  const items = Object.groupBy(cmd.items, (item) => item.player) as Record<
-    string,
-    NetworkItem[]
-  >
-
-  Object.entries(items).forEach(async ([id, player_items]) => {
-    const player = await db.player.get(parseInt(id))
-
-    if (player !== undefined) {
-      const combined_items = [
-        ...new Set([...player.received_items, ...player_items]),
-      ]
-      const newLocationsChecked = combined_items
-        .map((item) => item.location)
-        .filter((location) => player.missing_locations.includes(location))
-      const allLocationsChecked = [
-        ...player.checked_locations,
-        ...newLocationsChecked,
-      ]
-      const missingLocations = player.missing_locations.filter(
-        (location) => !newLocationsChecked.includes(location),
-      )
-      await db.player.update(player.id, {
-        missing_locations: missingLocations,
-        checked_locations: allLocationsChecked,
-        ...checksConsolidator(
-          allLocationsChecked.length,
-          allLocationsChecked.length + missingLocations.length,
-        ),
-      })
-    }
-  })
 }
 
 async function handleRoomUpdate(handler: CommandHandler<RoomUpdateCmd>) {
@@ -286,6 +256,8 @@ async function handlePrintJSON(
       suppressNextStatusCommand,
       setSuppressNextStatusCommand,
     )
+  } else if (isHint(handler.cmd)) {
+    handleHint(handler as CommandHandler<Hint>)
   } else {
     handler.addChat(message)
   }
@@ -308,17 +280,35 @@ async function handleConnectionRefused(
 async function handleItemSend(handler: CommandHandler<ItemSend>) {
   const archipelago = await db.archipelago.get(ID)
   assert(archipelago !== undefined)
-  const message = await itemSendTypography(handler.cmd, archipelago)
+  const message = await typographyItemInfo(handler.cmd, archipelago)
   handler.addStatus(message.message, message.element)
   const location = handler.cmd.data.find((part) => part.type === 'location_id')
-  const player = await db.player.get({ name: location?.player })
+  const player = await db.player.get(location?.player ?? -1)
 
-  if (player && !player.logged_in) {
-    await db.player.update(player.id, {
-      cur_checks: player.cur_checks + 1,
-      progress: ((player.cur_checks + 1) / player.total_checks) * 100,
-    })
+  if (player) {
+    if (player.logged_in) {
+      await db.player.update(player.id, {
+        locations: player.locations.map((l) => {
+          const ourItem = l.id === parseInt(location?.text ?? '-1')
+          return {
+            ...l,
+            found: ourItem ? true : l.found,
+          }
+        }),
+      })
+    } else {
+      await db.player.update(player.id, {
+        cur_locations: player.cur_locations + 1,
+      })
+    }
   }
+}
+
+async function handleHint(handler: CommandHandler<Hint>) {
+  const archipelago = await db.archipelago.get(ID)
+  assert(archipelago !== undefined)
+  const message = await typographyItemInfo(handler.cmd, archipelago)
+  handler.addStatus(message.message, message.element)
 }
 
 async function handleJoin(handler: CommandHandler<Join>) {
@@ -369,7 +359,9 @@ async function handleStatusResult(
   }
 
   message.split('\n').forEach(async (line) => {
-    const lineMsg = /^(.+) has (\d+) connections?\. \((\d+)\/(\d+)\)$/
+    const lineMsg =
+      /^(.+) has (\d+) connections?(?: and has finished)?\. \((\d+)\/(\d+)\)$/
+
     const lineMatch = line.match(lineMsg)
 
     if (lineMatch) {
@@ -398,16 +390,18 @@ async function handleStatusResult(
       }
 
       if (player) {
-        await db.player.update(player.id, {
-          status:
-            curChecks === totalChecks
-              ? ConnectionStatus.Completed
-              : connCount > 0
-                ? ConnectionStatus.Connected
-                : ConnectionStatus.Disconnected,
-          connections: connCount,
-          ...checksConsolidator(curChecks, totalChecks),
-        })
+        // If they're logged in we are handling they're tracking separately
+        if (player.logged_in) {
+          await db.player.update(player.id, {
+            connections: connCount,
+          })
+        } else {
+          await db.player.update(player.id, {
+            cur_locations: curChecks,
+            missing_locations: totalChecks - curChecks,
+            connections: connCount,
+          })
+        }
       }
     }
   })
@@ -494,7 +488,8 @@ async function dispatcher(
       await handleConnectionRefused(handler.cmd, handleConnectionError)
       break
     case 'ReceivedItems':
-      await handleReceivedItems(handler.cmd as ReceivedItems)
+      // All received items are handled in ItemUpdate (a PrintJSON subtype)
+      return
       break
     case 'RoomUpdate':
       await handleRoomUpdate(handler as CommandHandler<RoomUpdateCmd>)

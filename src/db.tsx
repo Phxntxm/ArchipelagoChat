@@ -15,20 +15,24 @@ interface Archipelago {
   hint_cost?: number
 }
 
+interface Location {
+  id: number
+  name: string
+  found: boolean
+}
+
 interface Player {
   id: number
   game: string
   name: string
   logged_in: boolean
   connections: number
-  missing_locations: number[]
-  checked_locations: number[]
+  locations: Location[]
   hint_points: number
-  cur_checks: number
-  progress: number
-  total_checks: number
   status: ConnectionStatus
   received_items: NetworkItem[]
+  cur_locations: number
+  missing_locations: number
 }
 
 const db = new Dexie('ArchipelagoChat') as Dexie & {
@@ -39,8 +43,8 @@ const db = new Dexie('ArchipelagoChat') as Dexie & {
 db.version(2).stores({
   archipelago: '++id, room_games, games, hint_points',
   player:
-    '++id, game, name, logged_in, connections, missing_locations, checked_locations, hint_points, cur_checks, total_checks, received_items',
+    '++id, game, name, logged_in, connections, locations, hint_points, status, received_items, cur_locations, missing_locations',
 })
 
 export { db }
-export type { Archipelago, ClientGame, Player }
+export type { Archipelago, ClientGame, Location, Player }
