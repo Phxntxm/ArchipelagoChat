@@ -32,7 +32,7 @@ const loginSchema = yup
       })
       .required('Port is required')
       .typeError('Port must be a valid number')
-      .min(1024)
+      .min(1)
       .max(65535),
     slot: yup.string().required('Slot is required'),
     password: yup.string().transform((value, originalValue) => {
