@@ -13,3 +13,5 @@ __unconfig*
 todos.json
 *.ts.net.*
 wsMiddleman.js
+Dockerfile
+docker-compose.yml
