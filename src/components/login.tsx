@@ -46,6 +46,7 @@ type LoginValues = yup.InferType<typeof loginSchema>
 interface LoginProps {
   setLoginDetails: React.Dispatch<React.SetStateAction<LoginDetails[]>>
   isLoading: boolean
+  setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
   connectionError: string
 }
 
@@ -53,6 +54,7 @@ export default function Login({
   setLoginDetails,
   isLoading,
   connectionError,
+  setIsLoading,
 }: LoginProps) {
   const [open, setOpen] = React.useState(true)
   const {
@@ -63,6 +65,7 @@ export default function Login({
 
   const onSubmit: SubmitHandler<LoginValues> = (data) => {
     if (data) {
+      setIsLoading(true)
       setLoginDetails([
         {
           ...data,

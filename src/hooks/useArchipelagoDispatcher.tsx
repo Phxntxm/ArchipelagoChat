@@ -56,6 +56,7 @@ const ALWAYS_ACCEPTED_COMMANDS = new Set([
 ])
 interface ArchipelagoDispatcherProps {
   cmdQueue: CommandHandler<Commands>[]
+  setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>
   setCmdQueue: Dispatch<SetStateAction<CommandHandler<Commands>[]>>
   handleConnectionError: (arg0: string) => void
 }
@@ -133,6 +134,7 @@ async function handleDataPackage(handler: CommandHandler<DataPackageCmd>) {
 
 async function handleConnected(
   handler: CommandHandler<ConnectedCmd>,
+  setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>,
   setSuppressNextStatusResult: (arg0: boolean) => void,
   setSuppressNextStatusCommand: (arg0: boolean) => void,
 ) {
@@ -201,6 +203,7 @@ async function handleConnected(
     }
   })
 
+  setLoggedIn(true)
   setSuppressNextStatusCommand(true)
   setSuppressNextStatusResult(true)
   handler.sendMessage('!status')
@@ -298,14 +301,14 @@ async function handlePrintJSON(
 
 async function handleConnectionRefused(
   cmd: ConnectionRefused,
-  handleConnectionRefused: (arg0: string) => void,
+  handleRefusal: (arg0: string) => void,
 ) {
   if (cmd.errors.includes('InvalidSlot')) {
-    handleConnectionRefused('Could not connect: Invalid Slot')
+    handleRefusal('Could not connect: Invalid Slot')
   } else if (cmd.errors.includes('InvalidPassword')) {
-    handleConnectionRefused('Could not connect: Invalid Password')
+    handleRefusal('Could not connect: Invalid Password')
   } else {
-    handleConnectionRefused(`Unknown error. Contact Phantom. ${cmd.errors}`)
+    handleRefusal(`Unknown error. Contact Phantom. ${cmd.errors}`)
   }
 }
 
@@ -496,6 +499,7 @@ async function handleChat(
 
 async function dispatcher(
   handler: CommandHandler<Commands>,
+  setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>,
   suppressNextStatusResult: boolean,
   setSuppressNextStatusResult: (arg0: boolean) => void,
   suppressNextStatusCommand: boolean,
@@ -513,6 +517,7 @@ async function dispatcher(
     case 'Connected':
       await handleConnected(
         handler as CommandHandler<ConnectedCmd>,
+        setLoggedIn,
         setSuppressNextStatusResult,
         setSuppressNextStatusCommand,
       )
@@ -585,6 +590,7 @@ export default function useArchipelagoDispatcher(
     setProcessingCommand(true)
     dispatcher(
       command,
+      props.setLoggedIn,
       suppressNextStatusResult,
       setSuppressNextStatusResult,
       suppressNextStatusCommand,

@@ -6,6 +6,7 @@ import SocketConnection, {
 import { db } from '#/db'
 import useArchipelagoDispatcher from '#/hooks/useArchipelagoDispatcher'
 import {
+  isLoggedIn,
   socketIdentifier,
   type ChatMessage,
   type CommandHandler,
@@ -37,6 +38,7 @@ function Home() {
     Record<string, SocketInformation>
   >({})
   const [isLoading, setIsLoading] = useState(false)
+  const [loggedIn, setLoggedIn] = useState(false)
   const childRefs = useRef<Map<string, SocketConnectionRef>>(new Map())
 
   // The chatbox information
@@ -61,12 +63,14 @@ function Home() {
 
   const handleConnectionError = (error: string) => {
     setConnError(error)
-    setTimeout(() => setConnError(''), 5000)
     handleSetLoginDetails([])
+    setLoggedIn(false)
+    setIsLoading(false)
   }
 
   useArchipelagoDispatcher({
     cmdQueue: cmdQueue,
+    setLoggedIn: setLoggedIn,
     setCmdQueue: setCmdQueue,
     handleConnectionError: handleConnectionError,
   })
@@ -99,6 +103,8 @@ function Home() {
   }, [])
 
   useEffect(() => {
+    // If we haven't tried to login yet, don't create any websockets
+    if (!isLoading || !isLoggedIn) return
     if (loginDetails.length > 0) {
       setChatter(
         socketIdentifier(
@@ -127,8 +133,13 @@ function Home() {
                 url={login.url}
                 port={login.port}
                 slot={login.slot}
+                isLoading={isLoading}
+                setIsLoading={setIsLoading}
+                loggedIn={loggedIn}
+                setLoggedIn={setLoggedIn}
                 password={login.password}
                 setReadyState={handleSetReadyState}
+                setConnError={setConnError}
                 addCmd={addCmd}
                 ref={(node) => {
                   if (node) {
@@ -146,10 +157,13 @@ function Home() {
     )
 
     setConnections(conns)
-  }, [loginDetails])
+  }, [loginDetails, isLoading, loggedIn])
 
   const logout = () => {
     childRefs.current.forEach((child) => child.getWebSocket()?.close())
+    setLoggedIn(false)
+    setIsLoading(false)
+    setConnError('')
     handleSetLoginDetails([])
     setChatMessages([])
     setStatusMessages([])
@@ -213,12 +227,13 @@ function Home() {
     }
   }
 
-  if (players?.length === 0) {
+  if (players?.length === 0 || !loggedIn) {
     return (
       <>
         {Object.values(connections).map((conns) => conns.element)}
         <Login
           setLoginDetails={handleSetLoginDetails}
+          setIsLoading={setIsLoading}
           isLoading={isLoading}
           connectionError={connError}
         />

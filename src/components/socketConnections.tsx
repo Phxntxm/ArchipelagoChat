@@ -22,6 +22,11 @@ interface SocketProps {
   url: string
   port: number
   slot: string
+  isLoading: boolean
+  setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
+  loggedIn: boolean
+  setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>
+  setConnError: React.Dispatch<React.SetStateAction<string>>
   password: string | null
   addCmd: (
     arg0: Commands,
@@ -41,13 +46,26 @@ export interface SocketConnectionRef {
 
 const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
   (props, ref) => {
-    const socketUrl = `wss://${props.url}:${props.port}`
+    const socketUrl = props.isLoading
+      ? `wss://${props.url}:${props.port}`
+      : null
     const {
       sendMessage: sendCommand,
       lastMessage,
       readyState,
       getWebSocket,
-    } = useWebSocket(socketUrl)
+    } = useWebSocket(socketUrl, {
+      onOpen: () => {
+        props.setIsLoading(false)
+      },
+      onClose: (event) => {
+        if (event.code === 1006) {
+          props.setConnError('Connection refused')
+        }
+        props.setLoggedIn(false)
+        props.setIsLoading(false)
+      },
+    })
     const { slot } = props
 
     const handleSendMessage = (message: string) => {
