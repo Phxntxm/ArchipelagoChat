@@ -26,6 +26,7 @@ import {
   type ItemSend,
   type Join,
   type PrintJSON,
+  type ReceivedItems,
   type RoomInfoCmd,
   type RoomUpdateCmd,
 } from '#/utils'
@@ -219,6 +220,38 @@ async function handleRoomUpdate(handler: CommandHandler<RoomUpdateCmd>) {
       await db.player.update(player.id, {
         hint_points: handler.cmd.hint_points,
       })
+    }
+  }
+}
+
+async function handleReceivedItems(handler: CommandHandler<ReceivedItems>) {
+  // Received items does not send any information to attach it to a player, so we sort of need to hobble this together
+  const archipelago = await db.archipelago.get(ID)
+
+  if (archipelago) {
+    const game = archipelago.games?.find((game) =>
+      handler.cmd.items
+        .map((item) => item.item.toString())
+        .some((element) => Object.keys(game.item_id_to_name).includes(element)),
+    )
+
+    if (game) {
+      const player = await db.player.get({ game: game.name })
+
+      if (player) {
+        // Initial send of items
+        if (handler.cmd.index === 0) {
+          await db.player.update(player.id, {
+            received_items: handler.cmd.items,
+          })
+        }
+        // Items received after connection
+        else {
+          await db.player.update(player.id, {
+            received_items: [...player.received_items, ...handler.cmd.items],
+          })
+        }
+      }
     }
   }
 }
@@ -488,8 +521,7 @@ async function dispatcher(
       await handleConnectionRefused(handler.cmd, handleConnectionError)
       break
     case 'ReceivedItems':
-      // All received items are handled in ItemUpdate (a PrintJSON subtype)
-      return
+      await handleReceivedItems(handler as CommandHandler<ReceivedItems>)
       break
     case 'RoomUpdate':
       await handleRoomUpdate(handler as CommandHandler<RoomUpdateCmd>)

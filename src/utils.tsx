@@ -425,7 +425,36 @@ async function typographyItemInfo(
             ),
           }
         case 'hint_status':
-          return { message: '', element: <></> }
+          switch (part.text) {
+            case '(found)':
+              return {
+                message: part.text,
+                element: (
+                  <Typography sx={{ color: '#1730f9' }} component={'span'}>
+                    {part.text}
+                  </Typography>
+                ),
+              }
+            case '(priority)':
+              return {
+                message: part.text,
+                element: (
+                  <Typography sx={{ color: '#cc34e5' }} component={'span'}>
+                    {part.text}
+                  </Typography>
+                ),
+              }
+            default:
+              return {
+                message: part.text,
+                element: (
+                  <Typography sx={{ color: '#297e03' }} component={'span'}>
+                    {part.text}
+                  </Typography>
+                ),
+              }
+          }
+          return { message: part.text, element: part.text }
         default:
           return { message: part.text, element: part.text }
       }
@@ -441,7 +470,7 @@ async function typographyItemInfo(
       <span>
         {textParts.map((part, index) => (
           <Fragment key={index}>
-            {index > 0 && ' '}
+            {index > 0 && ''}
             {part.element}
           </Fragment>
         ))}
