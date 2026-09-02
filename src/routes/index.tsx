@@ -6,7 +6,6 @@ import SocketConnection, {
 import { db } from '#/db'
 import useArchipelagoDispatcher from '#/hooks/useArchipelagoDispatcher'
 import {
-  isLoggedIn,
   socketIdentifier,
   type ChatMessage,
   type CommandHandler,
@@ -107,7 +106,7 @@ function Home() {
 
   useEffect(() => {
     // If we haven't tried to login yet, don't create any websockets
-    if (!isLoading || !isLoggedIn) return
+    if (!isLoading && !loggedIn) return
     if (loginDetails.length > 0) {
       setChatter(
         socketIdentifier(

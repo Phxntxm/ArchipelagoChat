@@ -46,9 +46,10 @@ export interface SocketConnectionRef {
 
 const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
   (props, ref) => {
-    const socketUrl = props.isLoading
-      ? `wss://${props.url}:${props.port}`
-      : null
+    const socketUrl =
+      props.isLoading || props.loggedIn
+        ? `wss://${props.url}:${props.port}`
+        : null
     const {
       sendMessage: sendCommand,
       lastMessage,

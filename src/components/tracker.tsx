@@ -99,9 +99,6 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
       }),
     )
     .flat()
-  const missingItems = items.filter(
-    (item) => item.status === TrackedItem.Waiting,
-  )
   const sendHint = (item: string, slot: string) => {
     sendMessageToSlot(`!hint ${item}`, slot)
   }
@@ -122,7 +119,7 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
           !selectedValues.includes(option)
         }
         onChange={(_, newValue) => handleNewSelection(newValue)}
-        options={missingItems}
+        options={items}
         getOptionKey={(option) => option.id}
         renderInput={(params) => <TextField {...params} label="Track" />}
       />
