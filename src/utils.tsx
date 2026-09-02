@@ -311,6 +311,15 @@ async function getLocationsForGame(gameName: string): Promise<Location[]> {
   return []
 }
 
+async function incrementPlayerCheck(id: number) {
+  await db.player
+    .where(':id')
+    .equals(id)
+    .modify((player) => {
+      player.cur_locations = player.cur_locations + 1
+    })
+}
+
 function socketIdentifier(
   url: string,
   port: number | string,
@@ -483,6 +492,7 @@ export {
   assert,
   ConnectionStatus,
   getLocationsForGame,
+  incrementPlayerCheck,
   isChat,
   isCommand,
   isCommandResult,

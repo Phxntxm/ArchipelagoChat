@@ -100,6 +100,9 @@ function Home() {
     if (details) {
       setLoginDetails(JSON.parse(details))
     }
+
+    db.player.clear()
+    db.archipelago.clear()
   }, [])
 
   useEffect(() => {

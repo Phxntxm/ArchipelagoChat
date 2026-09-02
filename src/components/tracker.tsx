@@ -41,10 +41,12 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
     [],
     [] as Player[],
   )
+
   useEffect(() => {
     ;(window as any).players = players
     ;(window as any).archipelago = archipelago
   }, [players, archipelago])
+
   const receivedItems = players.map((p) => p.received_items).flat()
   const games =
     archipelago?.games?.filter((game) =>
@@ -54,11 +56,7 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
   const { play } = useSound('notification/completed')
 
   useEffect(() => {
-    const savedItems = localStorage.getItem(KEY)
-
-    if (savedItems) {
-      setSelectedValues(JSON.parse(savedItems))
-    }
+    localStorage.setItem(KEY, JSON.stringify([]))
   }, [])
 
   useEffect(() => {

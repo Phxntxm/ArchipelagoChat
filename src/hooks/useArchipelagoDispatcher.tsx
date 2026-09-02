@@ -3,6 +3,7 @@ import {
   assert,
   ConnectionStatus,
   getLocationsForGame,
+  incrementPlayerCheck,
   isChat,
   isCommand,
   isCommandResult,
@@ -319,6 +320,29 @@ async function handleItemSend(handler: CommandHandler<ItemSend>) {
   const message = await typographyItemInfo(handler.cmd, archipelago)
   handler.addStatus(message.message, message.element)
   const location = handler.cmd.data.find((part) => part.type === 'location_id')
+
+  await db.transaction('rw', db.player, async () => {
+    const player = await db.player.get(location?.player ?? -1)
+
+    if (player) {
+      if (player.logged_in) {
+        await db.player.update(player.id, {
+          locations: player.locations.map((l) => {
+            const ourItem = l.id === parseInt(location?.text ?? '-1')
+            return {
+              ...l,
+              found: ourItem ? true : l.found,
+            }
+          }),
+        })
+      } else if (player.missing_locations !== 0) {
+        await db.player.update(player.id, {
+          cur_locations: player.cur_locations + 1,
+          missing_locations: player.missing_locations - 1,
+        })
+      }
+    }
+  })
   const player = await db.player.get(location?.player ?? -1)
 
   if (player) {
@@ -333,9 +357,7 @@ async function handleItemSend(handler: CommandHandler<ItemSend>) {
         }),
       })
     } else {
-      await db.player.update(player.id, {
-        cur_locations: player.cur_locations + 1,
-      })
+      await incrementPlayerCheck(player.id)
     }
   }
 }
@@ -426,7 +448,7 @@ async function handleStatusResult(
       }
 
       if (player) {
-        // If they're logged in we are handling they're tracking separately
+        // If they're logged in we are handling their tracking separately
         if (player.logged_in) {
           await db.player.update(player.id, {
             connections: connCount,
