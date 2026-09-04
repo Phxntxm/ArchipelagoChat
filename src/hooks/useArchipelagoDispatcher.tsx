@@ -3,7 +3,6 @@ import {
   assert,
   ConnectionStatus,
   getLocationsForGame,
-  incrementPlayerCheck,
   isChat,
   isCommand,
   isCommandResult,
@@ -343,23 +342,6 @@ async function handleItemSend(handler: CommandHandler<ItemSend>) {
       }
     }
   })
-  const player = await db.player.get(location?.player ?? -1)
-
-  if (player) {
-    if (player.logged_in) {
-      await db.player.update(player.id, {
-        locations: player.locations.map((l) => {
-          const ourItem = l.id === parseInt(location?.text ?? '-1')
-          return {
-            ...l,
-            found: ourItem ? true : l.found,
-          }
-        }),
-      })
-    } else {
-      await incrementPlayerCheck(player.id)
-    }
-  }
 }
 
 async function handleHint(handler: CommandHandler<Hint>) {
