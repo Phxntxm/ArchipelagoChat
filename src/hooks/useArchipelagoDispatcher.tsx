@@ -1,7 +1,6 @@
-import { db, type ClientGame } from '#/db'
 import {
-  assert,
   ConnectionStatus,
+  getInitializedData,
   getLocationsForGame,
   isChat,
   isCommand,
@@ -12,7 +11,6 @@ import {
   isJoin,
   isTagsChanged,
   isTutorial,
-  reverseRecord,
   typographyItemInfo,
   type Chat,
   type CommandHandler,
@@ -31,84 +29,58 @@ import {
   type RoomUpdateCmd,
 } from '#/utils'
 import Tooltip from '@mui/material/Tooltip'
-import _ from 'lodash'
-import {
-  useEffect,
-  useRef,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-} from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { v4 } from 'uuid'
-/* 
-This file contains the hook that will be used ONLY ONCE
-it uses the cmd Queue (and just uses the set for it, to remove the one it just handled)
-which will receive all the commands from all websockets. This is the hook responsible
-for deduping commands if we have multiple socket connections
+/*
+This hook receives commands from all websocket connections, processes them in
+FIFO batches, and deduplicates commands shared across connections.
 */
 
 const ID = 1
 const DUPLICATE_WINDOW_MS = 5_000
+const DUPLICATE_PRUNE_INTERVAL_MS = 5_000
+const COMMAND_BATCH_SIZE = 50
+const COMMAND_BATCH_BUDGET_MS = 8
 const ALWAYS_ACCEPTED_COMMANDS = new Set([
   'RoomInfo',
   'DataPackage',
   'Connected',
 ])
 interface ArchipelagoDispatcherProps {
-  cmdQueue: CommandHandler<Commands>[]
   setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>
-  setCmdQueue: Dispatch<SetStateAction<CommandHandler<Commands>[]>>
   handleConnectionError: (arg0: string) => void
 }
 
+interface ArchipelagoDispatcher {
+  enqueueCommand: (command: CommandHandler<Commands>) => void
+  clearQueue: () => void
+}
+
 // Standalone commands
-async function handleRoomInfo(handler: CommandHandler<RoomInfoCmd>) {
-  let existingInfo = await db.archipelago.get(ID)
+function handleRoomInfo(handler: CommandHandler<RoomInfoCmd>) {
+  handler.dataContextProps.setArchipelagoData({
+    id: ID,
+    room_games: handler.cmd.games,
+    datapackage_checksums: handler.cmd.datapackage_checksums,
+  })
 
-  if (existingInfo === undefined) {
-    await db.archipelago.add({
-      room_games: handler.cmd.games,
-      id: ID,
-      datapackage_checksums: handler.cmd.datapackage_checksums,
-    })
-    existingInfo = await db.archipelago.get(ID)
-  } else if (
-    !_.isEqual(
-      existingInfo.datapackage_checksums,
-      handler.cmd.datapackage_checksums,
-    )
-  ) {
-    await db.archipelago.delete(ID)
-    await db.archipelago.add({
-      room_games: handler.cmd.games,
-      id: ID,
-      datapackage_checksums: handler.cmd.datapackage_checksums,
-    })
-    existingInfo = await db.archipelago.get(ID)
-  }
-
-  assert(existingInfo !== undefined)
-  // Now that got our room info we can get our data package
   handler.sendCommand(
-    JSON.stringify([{ cmd: 'GetDataPackage', games: existingInfo.room_games }]),
+    JSON.stringify([{ cmd: 'GetDataPackage', games: handler.cmd.games }]),
   )
 }
 
-async function handleDataPackage(handler: CommandHandler<DataPackageCmd>) {
-  const games = Object.entries(handler.cmd.data.games).reduce(
-    (acc, [key, value]) => {
-      acc.push({
-        name: key,
-        item_id_to_name: reverseRecord(value.item_name_to_id),
-        item_id_to_location: reverseRecord(value.location_name_to_id),
-      })
-      return acc
-    },
-    [] as ClientGame[],
+function handleDataPackage(handler: CommandHandler<DataPackageCmd>) {
+  const games = Object.entries(handler.cmd.data.games).map(
+    ([name, gameData]) => ({
+      name,
+      item_name_to_id: gameData.item_name_to_id,
+      location_name_to_id: gameData.location_name_to_id,
+    }),
   )
-  await db.archipelago.update(ID, {
-    games: games,
-  })
+  handler.dataContextProps.updateArchipelagoData((current) => ({
+    ...current,
+    games,
+  }))
 
   // Now that our game info is retrieved we can connect
   handler.sendCommand(
@@ -132,75 +104,89 @@ async function handleDataPackage(handler: CommandHandler<DataPackageCmd>) {
   )
 }
 
-async function handleConnected(
+function handleConnected(
   handler: CommandHandler<ConnectedCmd>,
   setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>,
   setSuppressNextStatusResult: (arg0: boolean) => void,
   setSuppressNextStatusCommand: (arg0: boolean) => void,
 ) {
-  Object.entries(handler.cmd.slot_info).forEach(async ([slotId, slot]) => {
-    // First check if they exist - since we connect with multiple accounts
-    const existingPlayer = await db.player.get(parseInt(slotId))
-    const locations = (await getLocationsForGame(slot.game)).filter(
-      (l) =>
-        handler.cmd.checked_locations.includes(l.id) ||
-        handler.cmd.missing_locations.includes(l.id),
-    )
+  const data = getInitializedData(handler)
+  handler.dataContextProps.updatePlayers((currentPlayers) => {
+    const players = Object.entries(handler.cmd.slot_info)
+      .map(([slotId, slot]) => {
+        const playerId = parseInt(slotId)
+        const existingPlayer = currentPlayers.find(
+          (player) => player.id === playerId,
+        )
+        const locations = getLocationsForGame(
+          data.archipelago,
+          slot.game,
+        ).filter(
+          (l) =>
+            handler.cmd.checked_locations.includes(l.id) ||
+            handler.cmd.missing_locations.includes(l.id),
+        )
 
-    // If they don't exist but are not the one we're connecting with, just add default info
-    if (existingPlayer === undefined) {
-      if (slotId !== handler.cmd.slot.toString()) {
-        await db.player.add({
-          id: parseInt(slotId),
-          game: slot.game,
-          name: slot.name,
-          logged_in: false,
-          connections: 0,
-          status: ConnectionStatus.Disconnected,
-          locations: [],
-          received_items: [],
-          hint_points: 0,
-          cur_locations: 0,
-          missing_locations: 0,
-        })
-      }
-      // If they don't exist and match the one we're logging in with - fill in with command's info
-      else {
-        await db.player.add({
-          id: parseInt(slotId),
-          game: slot.game,
-          name: slot.name,
-          logged_in: true,
-          connections: 1,
-          status: ConnectionStatus.Connected,
-          locations: locations.map((location) => {
-            const found = handler.cmd.checked_locations.includes(location.id)
+        // If they don't exist but are not the one we're connecting with, just add default info
+        if (existingPlayer === undefined) {
+          if (slotId !== handler.cmd.slot.toString()) {
             return {
-              ...location,
-              found: found,
+              id: playerId,
+              game: slot.game,
+              name: slot.name,
+              logged_in: false,
+              connections: 0,
+              status: ConnectionStatus.Disconnected,
+              locations: [],
+              received_items: [],
+              hint_points: 0,
+              cur_locations: 0,
+              missing_locations: 0,
             }
-          }),
-          received_items: [],
-          hint_points: handler.cmd.hint_points,
-          cur_locations: handler.cmd.checked_locations.length,
-          missing_locations: handler.cmd.missing_locations.length,
-        })
-      }
-    }
-    // If they do exist... AND ONLY IF IT MATCHES THE CONNECTION, update with the command's info
-    else if (slotId === handler.cmd.slot.toString()) {
-      await db.player.update(handler.cmd.slot, {
-        logged_in: true,
-        locations: locations.map((location) => {
-          const found = handler.cmd.checked_locations.includes(location.id)
-          return {
-            ...location,
-            found: found,
           }
-        }),
-        hint_points: handler.cmd.hint_points,
+          // If they don't exist and match the one we're logging in with - fill in with command's info
+          else {
+            return {
+              id: playerId,
+              game: slot.game,
+              name: slot.name,
+              logged_in: true,
+              connections: 1,
+              status: ConnectionStatus.Connected,
+              locations: locations.map((location) => {
+                const found = handler.cmd.checked_locations.includes(
+                  location.id,
+                )
+                return {
+                  ...location,
+                  found: found,
+                }
+              }),
+              received_items: [],
+              hint_points: handler.cmd.hint_points,
+              cur_locations: handler.cmd.checked_locations.length,
+              missing_locations: handler.cmd.missing_locations.length,
+            }
+          }
+        }
+        // If they do exist... AND ONLY IF IT MATCHES THE CONNECTION, update with the command's info
+        else if (slotId === handler.cmd.slot.toString()) {
+          return {
+            ...existingPlayer,
+            logged_in: true,
+            locations: locations.map((location) => {
+              const found = handler.cmd.checked_locations.includes(location.id)
+              return {
+                ...location,
+                found: found,
+              }
+            }),
+            hint_points: handler.cmd.hint_points,
+          }
+        }
       })
-    }
+      .filter((player) => player !== undefined)
+    return players
   })
 
   setLoggedIn(true)
@@ -209,57 +195,67 @@ async function handleConnected(
   handler.sendMessage('!status')
 }
 
-async function handleRoomUpdate(handler: CommandHandler<RoomUpdateCmd>) {
+function handleRoomUpdate(handler: CommandHandler<RoomUpdateCmd>) {
+  getInitializedData(handler)
   // Handle global changes
   if (handler.cmd.hint_cost !== undefined) {
-    await db.archipelago.update(ID, { hint_cost: handler.cmd.hint_cost })
+    handler.dataContextProps.updateArchipelagoData((current) => ({
+      ...current,
+      hint_cost: handler.cmd.hint_cost,
+    }))
   }
-
   // Handle player changes
   if (handler.cmd.hint_points !== undefined) {
-    const player = await db.player.get({ name: handler.slot })
-
-    if (player !== undefined) {
-      await db.player.update(player.id, {
-        hint_points: handler.cmd.hint_points,
-      })
-    }
+    const hintPoints = handler.cmd.hint_points
+    handler.dataContextProps.updatePlayers((players) =>
+      players.map((player) =>
+        player.name === handler.slot
+          ? { ...player, hint_points: hintPoints }
+          : player,
+      ),
+    )
   }
 }
 
-async function handleReceivedItems(handler: CommandHandler<ReceivedItems>) {
+function handleReceivedItems(handler: CommandHandler<ReceivedItems>) {
   // Received items does not send any information to attach it to a player, so we sort of need to hobble this together
-  const archipelago = await db.archipelago.get(ID)
-
-  if (archipelago) {
-    const game = archipelago.games?.find((game) =>
-      handler.cmd.items
-        .map((item) => item.item.toString())
-        .some((element) => Object.keys(game.item_id_to_name).includes(element)),
-    )
-
-    if (game) {
-      const player = await db.player.get({ game: game.name })
-
-      if (player) {
-        // Initial send of items
-        if (handler.cmd.index === 0) {
-          await db.player.update(player.id, {
-            received_items: handler.cmd.items,
-          })
-        }
-        // Items received after connection
-        else {
-          await db.player.update(player.id, {
-            received_items: [...player.received_items, ...handler.cmd.items],
-          })
+  const data = getInitializedData(handler)
+  const game = data.archipelago.games?.find((game) =>
+    handler.cmd.items.some((item) => {
+      for (const itemName in game.item_name_to_id) {
+        if (
+          Object.hasOwn(game.item_name_to_id, itemName) &&
+          game.item_name_to_id[itemName] === item.item
+        ) {
+          return true
         }
       }
-    }
+
+      return false
+    }),
+  )
+
+  if (game) {
+    const recipient = data.players.find((player) => player.game === game.name)
+    if (recipient === undefined) return
+
+    handler.dataContextProps.updatePlayers((players) =>
+      players.map((player) =>
+        player.id === recipient.id
+          ? {
+              ...player,
+              received_items:
+                handler.cmd.index === 0
+                  ? handler.cmd.items
+                  : [...player.received_items, ...handler.cmd.items],
+            }
+          : player,
+      ),
+    )
   }
 }
 
-async function handlePrintJSON(
+function handlePrintJSON(
   handler: CommandHandler<PrintJSON>,
   suppressNextStatusResult: boolean,
   setSuppressNextStatusResult: (arg0: boolean) => void,
@@ -299,7 +295,7 @@ async function handlePrintJSON(
   }
 }
 
-async function handleConnectionRefused(
+function handleConnectionRefused(
   cmd: ConnectionRefused,
   handleRefusal: (arg0: string) => void,
 ) {
@@ -313,49 +309,69 @@ async function handleConnectionRefused(
 }
 
 // PrintJSON commands
-async function handleItemSend(handler: CommandHandler<ItemSend>) {
-  const archipelago = await db.archipelago.get(ID)
-  assert(archipelago !== undefined)
-  const message = await typographyItemInfo(handler.cmd, archipelago)
+function handleItemSend(handler: CommandHandler<ItemSend>) {
+  const data = getInitializedData(handler)
+  const message = typographyItemInfo(
+    handler.cmd,
+    data.archipelago,
+    data.players,
+  )
   handler.addStatus(message.message, message.element)
   const location = handler.cmd.data.find((part) => part.type === 'location_id')
 
-  await db.transaction('rw', db.player, async () => {
-    const player = await db.player.get(location?.player ?? -1)
+  const playerId = location?.player
+  if (playerId === undefined) return
 
-    if (player) {
+  const locationId = parseInt(location?.text ?? '-1')
+  handler.dataContextProps.updatePlayers((players) =>
+    players.map((player) => {
+      if (player.id !== playerId) return player
+
       if (player.logged_in) {
-        await db.player.update(player.id, {
-          locations: player.locations.map((l) => {
-            const ourItem = l.id === parseInt(location?.text ?? '-1')
-            return {
-              ...l,
-              found: ourItem ? true : l.found,
-            }
-          }),
-        })
-      } else if (player.missing_locations !== 0) {
-        await db.player.update(player.id, {
+        return {
+          ...player,
+          locations: player.locations.map((playerLocation) => ({
+            ...playerLocation,
+            found:
+              playerLocation.id === locationId ? true : playerLocation.found,
+          })),
+        }
+      }
+
+      if (player.missing_locations !== 0) {
+        return {
+          ...player,
           cur_locations: player.cur_locations + 1,
           missing_locations: player.missing_locations - 1,
-        })
+        }
       }
-    }
-  })
+
+      return player
+    }),
+  )
 }
 
-async function handleHint(handler: CommandHandler<Hint>) {
-  const archipelago = await db.archipelago.get(ID)
-  assert(archipelago !== undefined)
-  const message = await typographyItemInfo(handler.cmd, archipelago)
+function handleHint(handler: CommandHandler<Hint>) {
+  const data = getInitializedData(handler)
+  const message = typographyItemInfo(
+    handler.cmd,
+    data.archipelago,
+    data.players,
+  )
   handler.addStatus(message.message, message.element)
 }
 
-async function handleJoin(handler: CommandHandler<Join>) {
-  const player = await db.player.get(handler.cmd.slot)
+function handleJoin(handler: CommandHandler<Join>) {
+  const player = handler.dataContextProps.getPlayer(handler.cmd.slot)
 
   if (player) {
-    await db.player.update(player.id, { connections: player.connections + 1 })
+    handler.dataContextProps.updatePlayers((players) =>
+      players.map((current) =>
+        current.id === player.id
+          ? { ...current, connections: current.connections + 1 }
+          : current,
+      ),
+    )
 
     handler.addStatus(
       `${player.name} has joined! (Team ${handler.cmd.team})`,
@@ -369,11 +385,17 @@ async function handleJoin(handler: CommandHandler<Join>) {
   }
 }
 
-async function handleDisconnect(handler: CommandHandler<Disconnect>) {
-  const player = await db.player.get(handler.cmd.slot)
+function handleDisconnect(handler: CommandHandler<Disconnect>) {
+  const player = handler.dataContextProps.getPlayer(handler.cmd.slot)
 
   if (player) {
-    await db.player.update(player.id, { connections: player.connections - 1 })
+    handler.dataContextProps.updatePlayers((players) =>
+      players.map((current) =>
+        current.id === player.id
+          ? { ...current, connections: current.connections - 1 }
+          : current,
+      ),
+    )
     handler.addStatus(
       `${player.name} has disconnected.`,
       <span>
@@ -386,7 +408,7 @@ async function handleDisconnect(handler: CommandHandler<Disconnect>) {
   }
 }
 
-async function handleStatusResult(
+function handleStatusResult(
   message: string,
   handler: CommandHandler<CommandResult>,
   suppressNextStatusResult: boolean,
@@ -398,7 +420,7 @@ async function handleStatusResult(
     setSuppressNextStatusResult(false)
   }
 
-  message.split('\n').forEach(async (line) => {
+  message.split('\n').forEach((line) => {
     const lineMsg =
       /^(.+) has (\d+) connections?(?: and has finished)?\. \((\d+)\/(\d+)\)$/
 
@@ -409,45 +431,49 @@ async function handleStatusResult(
       const connCount = parseInt(lineMatch[2])
       const curChecks = parseInt(lineMatch[3])
       const totalChecks = parseInt(lineMatch[4])
-      let player = undefined
-
+      const originalSlot = slot
       // They're aliased - annoyingly there's no distinction in this command
       // that you can use other than guessing. If they've got a short name and slot,
       // and using parenthesis in their name (which is allowed)? We're fucked I guess
       if (slot.length > 16 && slot.includes('(') && slot.includes(')')) {
         const slotAliasMatch = slot.match(/\(([^\)]*)\)/)
         if (slotAliasMatch) {
-          slot = slotAliasMatch[1]
-          player = await db.player.get({ name: slot })
-          // If we couldn't find them, default back to the original match
-          if (player === undefined) {
-            slot = lineMatch[1]
-            player = await db.player.get({ name: slot })
+          const aliasedPlayer = handler.dataContextProps
+            .getData()
+            ?.players.find((candidate) => candidate.name === slotAliasMatch[1])
+          if (aliasedPlayer) {
+            slot = aliasedPlayer.name
+          } else {
+            slot = originalSlot
           }
         }
-      } else {
-        player = await db.player.get({ name: slot })
       }
 
+      const player = handler.dataContextProps
+        .getData()
+        ?.players.find((candidate) => candidate.name === slot)
       if (player) {
         // If they're logged in we are handling their tracking separately
-        if (player.logged_in) {
-          await db.player.update(player.id, {
-            connections: connCount,
-          })
-        } else {
-          await db.player.update(player.id, {
-            cur_locations: curChecks,
-            missing_locations: totalChecks - curChecks,
-            connections: connCount,
-          })
-        }
+        handler.dataContextProps.updatePlayers((players) =>
+          players.map((current) =>
+            current.id !== player.id
+              ? current
+              : current.logged_in
+                ? { ...current, connections: connCount }
+                : {
+                    ...current,
+                    cur_locations: curChecks,
+                    missing_locations: totalChecks - curChecks,
+                    connections: connCount,
+                  },
+          ),
+        )
       }
     }
   })
 }
 
-async function handleCommandResult(
+function handleCommandResult(
   message: string,
   handler: CommandHandler<CommandResult>,
   suppressNextStatusResult: boolean,
@@ -458,7 +484,7 @@ async function handleCommandResult(
   const statusMatch = message.match(statusMsg)
 
   if (statusMatch) {
-    await handleStatusResult(
+    handleStatusResult(
       message,
       handler,
       suppressNextStatusResult,
@@ -469,12 +495,12 @@ async function handleCommandResult(
   }
 }
 
-async function handleChat(
+function handleChat(
   handler: CommandHandler<Chat>,
   suppressNextStatusCommand: boolean,
   setSuppressNextStatusCommand: (arg0: boolean) => void,
 ) {
-  const player = await db.player.get(handler.cmd.slot)
+  const player = handler.dataContextProps.getPlayer(handler.cmd.slot)
 
   if (player) {
     const msgToSend = (
@@ -501,7 +527,7 @@ async function handleChat(
   }
 }
 
-async function dispatcher(
+function dispatcher(
   handler: CommandHandler<Commands>,
   setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>,
   suppressNextStatusResult: boolean,
@@ -510,16 +536,15 @@ async function dispatcher(
   setSuppressNextStatusCommand: (arg0: boolean) => void,
   handleConnectionError: (arg0: string) => void,
 ) {
-  console.log(handler.cmd)
   switch (handler.cmd.cmd) {
     case 'RoomInfo':
-      await handleRoomInfo(handler as CommandHandler<RoomInfoCmd>)
+      handleRoomInfo(handler as CommandHandler<RoomInfoCmd>)
       break
     case 'DataPackage':
-      await handleDataPackage(handler as CommandHandler<DataPackageCmd>)
+      handleDataPackage(handler as CommandHandler<DataPackageCmd>)
       break
     case 'Connected':
-      await handleConnected(
+      handleConnected(
         handler as CommandHandler<ConnectedCmd>,
         setLoggedIn,
         setSuppressNextStatusResult,
@@ -527,16 +552,16 @@ async function dispatcher(
       )
       break
     case 'ConnectionRefused':
-      await handleConnectionRefused(handler.cmd, handleConnectionError)
+      handleConnectionRefused(handler.cmd, handleConnectionError)
       break
     case 'ReceivedItems':
-      await handleReceivedItems(handler as CommandHandler<ReceivedItems>)
+      handleReceivedItems(handler as CommandHandler<ReceivedItems>)
       break
     case 'RoomUpdate':
-      await handleRoomUpdate(handler as CommandHandler<RoomUpdateCmd>)
+      handleRoomUpdate(handler as CommandHandler<RoomUpdateCmd>)
       break
     case 'PrintJSON':
-      await handlePrintJSON(
+      handlePrintJSON(
         handler as CommandHandler<PrintJSON>,
         suppressNextStatusResult,
         setSuppressNextStatusResult,
@@ -551,60 +576,130 @@ async function dispatcher(
 
 export default function useArchipelagoDispatcher(
   props: ArchipelagoDispatcherProps,
-) {
-  const [processingCommand, setProcessingCommand] = useState<boolean>(false)
+): ArchipelagoDispatcher {
+  const propsRef = useRef(props)
+  propsRef.current = props
+  const cmdQueue = useRef<CommandHandler<Commands>[]>([])
+  const queueHead = useRef(0)
   const receivedCommands = useRef(new Map<string, number>())
+  const lastDuplicatePrune = useRef(0)
+  const timeoutId = useRef<number | undefined>(undefined)
   // To get more info we need to run status in the beginning, but we don't care about the chat message
   //  so just suppress it
-  const [suppressNextStatusResult, setSuppressNextStatusResult] =
-    useState<boolean>(false)
-  const [suppressNextStatusCommand, setSuppressNextStatusCommand] =
-    useState<boolean>(false)
+  const suppressNextStatusResult = useRef(false)
+  const suppressNextStatusCommand = useRef(false)
 
-  useEffect(() => {
-    // If we don't have any commands, obviously nothing to process
-    if (props.cmdQueue.length === 0) return
-    // We only want to process one command at a time
-    if (processingCommand) return
+  const clearQueue = useCallback(() => {
+    if (timeoutId.current !== undefined) {
+      window.clearTimeout(timeoutId.current)
+      timeoutId.current = undefined
+    }
+    cmdQueue.current = []
+    queueHead.current = 0
+    receivedCommands.current.clear()
+    lastDuplicatePrune.current = 0
+    suppressNextStatusResult.current = false
+    suppressNextStatusCommand.current = false
+  }, [])
 
+  const processBatch = useCallback(() => {
+    timeoutId.current = undefined
+    const startedAt = performance.now()
+    let processed = 0
     const now = Date.now()
-    for (const [serializedCommand, receivedAt] of receivedCommands.current) {
-      if (now - receivedAt >= DUPLICATE_WINDOW_MS) {
-        receivedCommands.current.delete(serializedCommand)
+
+    if (now - lastDuplicatePrune.current >= DUPLICATE_PRUNE_INTERVAL_MS) {
+      for (const [serializedCommand, receivedAt] of receivedCommands.current) {
+        if (now - receivedAt >= DUPLICATE_WINDOW_MS) {
+          receivedCommands.current.delete(serializedCommand)
+        }
+      }
+      lastDuplicatePrune.current = now
+    }
+
+    while (
+      queueHead.current < cmdQueue.current.length &&
+      processed < COMMAND_BATCH_SIZE &&
+      performance.now() - startedAt < COMMAND_BATCH_BUDGET_MS
+    ) {
+      const command = cmdQueue.current[queueHead.current]
+      queueHead.current += 1
+      processed += 1
+
+      const commandTime = Date.now()
+      const shouldDeduplicate = !ALWAYS_ACCEPTED_COMMANDS.has(command.cmd.cmd)
+
+      if (shouldDeduplicate) {
+        const serializedCommand = JSON.stringify(command.cmd)
+        const receivedAt = receivedCommands.current.get(serializedCommand)
+
+        if (
+          receivedAt !== undefined &&
+          commandTime - receivedAt < DUPLICATE_WINDOW_MS
+        ) {
+          receivedCommands.current.set(serializedCommand, commandTime)
+          continue
+        }
+
+        receivedCommands.current.set(serializedCommand, commandTime)
+      }
+
+      const currentProps = propsRef.current
+      try {
+        dispatcher(
+          command,
+          currentProps.setLoggedIn,
+          suppressNextStatusResult.current,
+          (value) => {
+            suppressNextStatusResult.current = value
+          },
+          suppressNextStatusCommand.current,
+          (value) => {
+            suppressNextStatusCommand.current = value
+          },
+          currentProps.handleConnectionError,
+        )
+      } catch (error) {
+        console.error('Failed to process websocket command', command.cmd, error)
       }
     }
 
-    const command = props.cmdQueue[0]
-    const shouldDeduplicate = !ALWAYS_ACCEPTED_COMMANDS.has(command.cmd.cmd)
-
-    if (shouldDeduplicate) {
-      const serializedCommand = JSON.stringify(command.cmd)
-      const receivedAt = receivedCommands.current.get(serializedCommand)
-
-      if (receivedAt !== undefined && now - receivedAt < DUPLICATE_WINDOW_MS) {
-        receivedCommands.current.set(serializedCommand, now)
-        props.setCmdQueue((prev) => prev.slice(1))
-        return
-      }
-
-      receivedCommands.current.set(serializedCommand, now)
+    if (queueHead.current === cmdQueue.current.length) {
+      cmdQueue.current = []
+      queueHead.current = 0
+    } else if (
+      queueHead.current >= COMMAND_BATCH_SIZE &&
+      queueHead.current * 2 >= cmdQueue.current.length
+    ) {
+      cmdQueue.current = cmdQueue.current.slice(queueHead.current)
+      queueHead.current = 0
     }
 
-    // Otherwise we'll handle this command,so set processing to True
-    setProcessingCommand(true)
-    dispatcher(
-      command,
-      props.setLoggedIn,
-      suppressNextStatusResult,
-      setSuppressNextStatusResult,
-      suppressNextStatusCommand,
-      setSuppressNextStatusCommand,
-      props.handleConnectionError,
-    )
-      .then(() => {
-        setProcessingCommand(false)
-        props.setCmdQueue((prev) => prev.slice(1))
-      })
-      .catch((reason) => console.log(reason))
-  }, [props.cmdQueue, processingCommand])
+    if (queueHead.current < cmdQueue.current.length) {
+      timeoutId.current = window.setTimeout(processBatch, 0)
+    }
+  }, [])
+
+  const scheduleBatch = useCallback(() => {
+    if (timeoutId.current === undefined) {
+      timeoutId.current = window.setTimeout(processBatch, 0)
+    }
+  }, [processBatch])
+
+  const enqueueCommand = useCallback(
+    (command: CommandHandler<Commands>) => {
+      cmdQueue.current.push(command)
+      scheduleBatch()
+    },
+    [scheduleBatch],
+  )
+
+  useEffect(
+    () => () => {
+      clearQueue()
+    },
+    [clearQueue],
+  )
+
+  return { enqueueCommand, clearQueue }
 }

@@ -3,6 +3,8 @@ import FormControlLabel from '@mui/material/FormControlLabel'
 import Modal from '@mui/material/Modal'
 import { Grid } from '@mui/system'
 import { useEffect, useState } from 'react'
+import { parseFilterSettings } from './chatFilterSettings'
+import type { FilterSettings } from './chatFilterSettings'
 
 const KEY = 'AP-filter-settings'
 const style = {
@@ -23,23 +25,24 @@ interface FilterChatProps {
   setOpen: (arg0: boolean) => void
 }
 
-interface FilterSettings {
-  filterCommands: boolean
-  filterOthersItems: boolean
-}
-
 export default function FilterChatModal({ open, setOpen }: FilterChatProps) {
   const [filterSettings, setFilterSettings] = useState<FilterSettings>({
     filterCommands: false,
     filterOthersItems: false,
+    filterJoinLeaves: false,
   })
 
   useEffect(() => {
-    const saved = localStorage.getItem(KEY)
-
-    if (saved) {
-      setFilterSettings(JSON.parse(saved))
+    const handleStorage = () => {
+      const saved = localStorage.getItem(KEY)
+      if (saved) {
+        setFilterSettings(parseFilterSettings(saved))
+      }
     }
+
+    handleStorage()
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
   }, [])
 
   const handleChange = (
@@ -71,7 +74,16 @@ export default function FilterChatModal({ open, setOpen }: FilterChatProps) {
               checked={filterSettings.filterOthersItems}
             />
           }
-          label="Filter out items sent to other players"
+          label="Filter out items that aren't sent to/from us"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              onChange={(event) => handleChange(event, 'filterJoinLeaves')}
+              checked={filterSettings.filterJoinLeaves}
+            />
+          }
+          label="Filter out joins and leaves"
         />
       </Grid>
     </Modal>

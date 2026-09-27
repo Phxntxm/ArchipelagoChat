@@ -7,6 +7,7 @@ import { defineConfig } from 'vite'
 export default defineConfig(({ mode }) => ({
   base: '/ArchipelagoChat/',
   resolve: { tsconfigPaths: true },
+  server: {allowedHosts: ['test.homelab.phantom.gay']},
   plugins: [
     devtools(),
     tailwindcss(),

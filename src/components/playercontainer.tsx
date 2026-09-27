@@ -5,10 +5,10 @@ import TableCell from '@mui/material/TableCell'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Typography from '@mui/material/Typography'
-import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo } from 'react'
 
-import { db, type Player } from '#/db'
+import { useDataContext } from '#/data'
+import type { Player } from '#/data'
 import Paper from '@mui/material/Paper'
 import TableContainer from '@mui/material/TableContainer'
 import TableSortLabel from '@mui/material/TableSortLabel'
@@ -85,7 +85,8 @@ function getComparator<Key extends keyof any>(
 export default function PlayerContainer() {
   const [order, setOrder] = useState<Order>('desc')
   const [orderBy, setOrderBy] = useState<keyof PlayerTable>('progress')
-  const players = useLiveQuery(() => db.player.toArray())
+  const { data } = useDataContext()
+  const players = data?.players ?? []
 
   const handleRequestSort = (property: keyof PlayerTable) => {
     const isAsc = orderBy === property && order === 'asc'
@@ -95,7 +96,7 @@ export default function PlayerContainer() {
 
   const rows = useMemo(
     () =>
-      [...(players ?? [])]
+      [...players]
         .map((player) => {
           return {
             ...player,
@@ -107,7 +108,7 @@ export default function PlayerContainer() {
   )
 
   return (
-    <TableContainer component={Paper} sx={{ maxHeight: 440 }}>
+    <TableContainer component={Paper}>
       <Table stickyHeader>
         <TableHead>
           <TableRow>

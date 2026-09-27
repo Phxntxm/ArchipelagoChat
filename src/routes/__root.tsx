@@ -1,5 +1,6 @@
 import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
 
+import { DataProvider } from '#/data'
 import CssBaseline from '@mui/material/CssBaseline'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
 import appCss from '../styles.css?url'
@@ -56,16 +57,18 @@ export const Route = createRootRoute({
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <html lang="en">
-        <head>
-          <HeadContent />
-        </head>
-        <body>
-          {children}
-          <Scripts />
-        </body>
-      </html>
+      <DataProvider>
+        <CssBaseline />
+        <html lang="en">
+          <head>
+            <HeadContent />
+          </head>
+          <body>
+            {children}
+            <Scripts />
+          </body>
+        </html>
+      </DataProvider>
     </ThemeProvider>
   )
 }

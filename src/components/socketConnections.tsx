@@ -24,9 +24,12 @@ interface SocketProps {
   slot: string
   isLoading: boolean
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setLoginStarted: React.Dispatch<React.SetStateAction<boolean>>
   loggedIn: boolean
   setLoggedIn: React.Dispatch<React.SetStateAction<boolean>>
   setConnError: React.Dispatch<React.SetStateAction<string>>
+  sessionId: number
+  isCurrentSession: (sessionId: number) => boolean
   password: string | null
   addCmd: (
     arg0: Commands,
@@ -57,9 +60,12 @@ const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
       getWebSocket,
     } = useWebSocket(socketUrl, {
       onOpen: () => {
+        if (!props.isCurrentSession(props.sessionId)) return
         props.setIsLoading(false)
       },
       onClose: (event) => {
+        if (!props.isCurrentSession(props.sessionId)) return
+        props.setLoginStarted(false)
         if (event.code === 1006) {
           props.setConnError('Connection refused')
         }
@@ -91,7 +97,11 @@ const SocketConnection = forwardRef<SocketConnectionRef, SocketProps>(
     }[readyState]
 
     useEffect(() => {
-      if (lastMessage && lastMessage.data) {
+      if (
+        props.isCurrentSession(props.sessionId) &&
+        lastMessage &&
+        lastMessage.data
+      ) {
         const commands: Commands[] = JSON.parse(lastMessage.data)
         commands.forEach((cmd) =>
           props.addCmd(

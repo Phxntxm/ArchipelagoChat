@@ -1,4 +1,5 @@
-import { db, type ClientGame, type Player } from '#/db'
+import { useDataContext } from '#/data'
+import type { ClientGame } from '#/data'
 import Autocomplete from '@mui/material/Autocomplete'
 import Button from '@mui/material/Button'
 import Paper from '@mui/material/Paper'
@@ -10,7 +11,6 @@ import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useState } from 'react'
 import { useSound } from 'react-sounds'
 
@@ -35,12 +35,9 @@ interface AutocompleteOption {
 
 export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
   const MAX_SELECTIONS = 5
-  const archipelago = useLiveQuery(() => db.archipelago.get(1))
-  const players = useLiveQuery(
-    () => db.player.filter((p) => p.logged_in).toArray(),
-    [],
-    [] as Player[],
-  )
+  const { data } = useDataContext()
+  const archipelago = data?.archipelago
+  const players = data?.players.filter((player) => player.logged_in) ?? []
 
   useEffect(() => {
     ;(window as any).players = players
@@ -86,11 +83,12 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
   const itemNumbers = receivedItems.map((item) => item.item.toString())
   const items = games
     .map((game) =>
-      Object.entries(game.item_id_to_name).map(([key, value]) => {
+      Object.entries(game.item_name_to_id).map(([name, id]) => {
+        const itemId = id.toString()
         return {
-          label: value,
-          id: key,
-          status: itemNumbers.includes(key)
+          label: name,
+          id: itemId,
+          status: itemNumbers.includes(itemId)
             ? TrackedItem.Found
             : TrackedItem.Waiting,
           game: game.name,

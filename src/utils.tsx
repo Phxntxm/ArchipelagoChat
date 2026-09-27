@@ -1,7 +1,13 @@
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { Fragment, type ReactElement } from 'react'
-import { db, type Archipelago, type Location, type Player } from './db'
+import type {
+  Archipelago,
+  Data,
+  DataContextProps,
+  Location,
+  Player,
+} from './data'
 
 enum ConnectionStatus {
   Connected,
@@ -201,6 +207,7 @@ interface CommandHandler<T extends Commands> {
   cmd: T
   slot: string
   password: string | null
+  dataContextProps: DataContextProps
   sendMessage: (arg0: string) => void
   sendCommand: (arg0: string) => void
   addChat: (arg0: string, arg1?: ReactElement) => void
@@ -278,46 +285,37 @@ function assert(condition: any, message?: string): asserts condition {
   }
 }
 
-type ReverseRecord<T extends Record<PropertyKey, PropertyKey>> = {
-  [K in keyof T as T[K]]: K
+function getInitializedData<T extends Commands>(
+  handler: CommandHandler<T>,
+): Data {
+  const data = handler.dataContextProps.getData()
+
+  if (data === undefined) {
+    throw new Error('Received a command before data setup completed')
+  }
+
+  return data
 }
 
-function reverseRecord<T extends Record<PropertyKey, PropertyKey>>(
-  obj: T,
-): ReverseRecord<T> {
-  return Object.fromEntries(
-    Object.entries(obj).map(([key, value]) => [value, key]),
-  ) as ReverseRecord<T>
-}
-
-async function getLocationsForGame(gameName: string): Promise<Location[]> {
-  const archipelago = await db.archipelago.get(1)
-  const game = archipelago?.games?.find((game) => game.name === gameName)
+function getLocationsForGame(
+  archipelago: Archipelago,
+  gameName: string,
+): Location[] {
+  const game = archipelago.games?.find((game) => game.name === gameName)
 
   if (game) {
-    const locations = Object.entries(game.item_id_to_location).map(
-      ([key, value]) => {
-        return {
-          name: value,
-          found: false,
-          id: parseInt(key),
-        }
-      },
+    const locations = Object.entries(game.location_name_to_id).map(
+      ([name, id]) => ({
+        name,
+        found: false,
+        id,
+      }),
     )
 
     return locations
   }
 
   return []
-}
-
-async function incrementPlayerCheck(id: number) {
-  await db.player
-    .where(':id')
-    .equals(id)
-    .modify((player) => {
-      player.cur_locations = player.cur_locations + 1
-    })
 }
 
 function socketIdentifier(
@@ -381,94 +379,116 @@ function itemColoured(item: string, flag: number) {
   }
 }
 
+function getNameForId(
+  nameToId: Record<string, number>,
+  id: number,
+): string | undefined {
+  for (const name in nameToId) {
+    if (Object.hasOwn(nameToId, name) && nameToId[name] === id) {
+      return name
+    }
+  }
+
+  return undefined
+}
+
 interface ChatMessage {
   message: string
   element?: ReactElement
 }
 
-async function getPlayer(id: number): Promise<Player> {
-  const player = await db.player.get(id)
-  assert(player !== undefined)
-  return player
-}
-
-async function typographyItemInfo(
+function typographyItemInfo(
   cmd: PrintJSON,
   archipelago: Archipelago,
-): Promise<ChatMessage> {
-  let player: Player
-
-  const textParts = await Promise.all(
-    cmd.data.map(async (part) => {
-      switch (part.type) {
-        case 'player_id':
-          player = await getPlayer(parseInt(part.text))
-          return {
-            message: player.name,
-            element: (
-              <Tooltip describeChild title={player.game} placement="top">
-                <strong>{player.name}</strong>
-              </Tooltip>
-            ),
-          }
-        case 'item_id':
-          player = await getPlayer(part.player ?? -1)
-          const itemName = archipelago.games?.find(
-            (game) => game.name === player.game,
-          )?.item_id_to_name[parseInt(part.text)]
-          return {
-            message: itemName,
-            element: itemColoured(itemName ?? 'Unknown', part.flags ?? 1),
-          }
-        case 'location_id':
-          player = await getPlayer(part.player ?? -1)
-          const locationName = archipelago.games?.find(
-            (game) => game.name === player.game,
-          )?.item_id_to_location[parseInt(part.text)]
-          return {
-            message: locationName,
-            element: (
-              <Typography sx={{ color: '#770e76' }} component={'span'}>
-                {locationName}
-              </Typography>
-            ),
-          }
-        case 'hint_status':
-          switch (part.text) {
-            case '(found)':
-              return {
-                message: part.text,
-                element: (
-                  <Typography sx={{ color: '#1730f9' }} component={'span'}>
-                    {part.text}
-                  </Typography>
-                ),
-              }
-            case '(priority)':
-              return {
-                message: part.text,
-                element: (
-                  <Typography sx={{ color: '#cc34e5' }} component={'span'}>
-                    {part.text}
-                  </Typography>
-                ),
-              }
-            default:
-              return {
-                message: part.text,
-                element: (
-                  <Typography sx={{ color: '#297e03' }} component={'span'}>
-                    {part.text}
-                  </Typography>
-                ),
-              }
-          }
-          return { message: part.text, element: part.text }
-        default:
-          return { message: part.text, element: part.text }
+  players: Player[],
+): ChatMessage {
+  const textParts = cmd.data.map((part) => {
+    switch (part.type) {
+      case 'player_id': {
+        const player = players.find(
+          (player) => player.id === parseInt(part.text),
+        )
+        assert(player !== undefined, `Could not find player ${part.text}`)
+        return {
+          message: player.name,
+          element: (
+            <Tooltip describeChild title={player.game} placement="top">
+              <strong>{player.name}</strong>
+            </Tooltip>
+          ),
+        }
       }
-    }),
-  )
+      case 'item_id': {
+        const player = players.find(
+          (player) => player.id === (part.player ?? -1),
+        )
+        assert(player !== undefined, `Could not find player ${part.player}`)
+        const itemNameMap = archipelago.games?.find(
+          (game) => game.name === player.game,
+        )?.item_name_to_id
+        const itemName = itemNameMap
+          ? getNameForId(itemNameMap, parseInt(part.text))
+          : undefined
+        return {
+          message: itemName,
+          element: itemColoured(itemName ?? 'Unknown', part.flags ?? 1),
+        }
+      }
+      case 'location_id': {
+        const player = players.find(
+          (player) => player.id === (part.player ?? -1),
+        )
+        assert(player !== undefined, `Could not find player ${part.player}`)
+        const locationNameMap = archipelago.games?.find(
+          (game) => game.name === player.game,
+        )?.location_name_to_id
+        const locationName = locationNameMap
+          ? getNameForId(locationNameMap, parseInt(part.text))
+          : undefined
+        return {
+          message: locationName,
+          element: (
+            <Typography sx={{ color: '#770e76' }} component={'span'}>
+              {locationName}
+            </Typography>
+          ),
+        }
+      }
+      case 'hint_status':
+        switch (part.text) {
+          case '(found)':
+            return {
+              message: part.text,
+              element: (
+                <Typography sx={{ color: '#1730f9' }} component={'span'}>
+                  {part.text}
+                </Typography>
+              ),
+            }
+          case '(priority)':
+            return {
+              message: part.text,
+              element: (
+                <Typography sx={{ color: '#cc34e5' }} component={'span'}>
+                  {part.text}
+                </Typography>
+              ),
+            }
+          default:
+            return {
+              message: part.text,
+              element: (
+                <Typography sx={{ color: '#297e03' }} component={'span'}>
+                  {part.text}
+                </Typography>
+              ),
+            }
+        }
+        return { message: part.text, element: part.text }
+      default:
+        return { message: part.text, element: part.text }
+    }
+  })
 
   return {
     message: textParts
@@ -490,9 +510,9 @@ async function typographyItemInfo(
 
 export {
   assert,
+  getInitializedData,
   ConnectionStatus,
   getLocationsForGame,
-  incrementPlayerCheck,
   isChat,
   isCommand,
   isCommandResult,
@@ -503,7 +523,6 @@ export {
   isLoggedIn,
   isTagsChanged,
   isTutorial,
-  reverseRecord,
   socketIdentifier,
   typographyItemInfo,
 }

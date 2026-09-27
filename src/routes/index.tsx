@@ -3,18 +3,17 @@ import Login from '#/components/login'
 import SocketConnection, {
   type SocketConnectionRef,
 } from '#/components/socketConnections'
-import { db } from '#/db'
+import { useDataContext } from '#/data'
 import useArchipelagoDispatcher from '#/hooks/useArchipelagoDispatcher'
 import {
   socketIdentifier,
   type ChatMessage,
-  type CommandHandler,
   type Commands,
   type LoginDetails,
 } from '#/utils'
 import { createFileRoute } from '@tanstack/react-router'
-import { useLiveQuery } from 'dexie-react-hooks'
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -24,6 +23,7 @@ import {
 
 export const Route = createFileRoute('/')({ component: Home })
 const KEY = 'AP-login-details'
+const MAX_MESSAGES = 50
 
 interface SocketInformation {
   state: string
@@ -38,41 +38,55 @@ function Home() {
   >({})
   const [isLoading, setIsLoading] = useState(false)
   const [loggedIn, setLoggedIn] = useState(false)
+  const [loginStarted, setLoginStarted] = useState(false)
   const childRefs = useRef<Map<string, SocketConnectionRef>>(new Map())
+  const acceptingCommands = useRef(false)
+  const connectionSession = useRef(0)
+  const clearCommandQueue = useRef<() => void>(() => {})
+  const isCurrentSession = useCallback(
+    (sessionId: number) => connectionSession.current === sessionId,
+    [],
+  )
+  const dataContextProps = useDataContext()
+  const { resetData } = dataContextProps
 
   // The chatbox information
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [statusMessages, setStatusMessages] = useState<ChatMessage[]>([])
   const addChat = (message: string, element?: ReactElement) => {
-    setChatMessages((msgs) => [...msgs, { message: message, element: element }])
+    setChatMessages((msgs) => [
+      ...msgs.slice(-(MAX_MESSAGES - 1)),
+      { message: message, element: element },
+    ])
   }
   const addStatus = (message: string, element?: ReactElement) => {
     setStatusMessages((msgs) => [
-      ...msgs,
+      ...msgs.slice(-(MAX_MESSAGES - 1)),
       { message: message, element: element },
     ])
   }
 
-  const players = useLiveQuery(() =>
-    db.player.filter((player) => player.logged_in).toArray(),
-  )
-
-  // The command queue that'll be appended too on each websocket connection
-  const [cmdQueue, setCmdQueue] = useState<CommandHandler<Commands>[]>([])
+  const players =
+    dataContextProps.data?.players.filter((player) => player.logged_in) ?? []
 
   const handleConnectionError = (error: string) => {
+    connectionSession.current += 1
+    acceptingCommands.current = false
+    clearCommandQueue.current()
+    resetData()
+    setLoginStarted(false)
     setConnError(error)
     handleSetLoginDetails([])
     setLoggedIn(false)
     setIsLoading(false)
+    setConnections({})
   }
 
-  useArchipelagoDispatcher({
-    cmdQueue: cmdQueue,
+  const { enqueueCommand, clearQueue } = useArchipelagoDispatcher({
     setLoggedIn: setLoggedIn,
-    setCmdQueue: setCmdQueue,
     handleConnectionError: handleConnectionError,
   })
+  clearCommandQueue.current = clearQueue
 
   const addCmd = (
     cmd: Commands,
@@ -81,17 +95,26 @@ function Home() {
     sendMessage: (arg0: string) => void,
     sendCommand: (arg0: string) => void,
   ) => {
+    if (!acceptingCommands.current) return
+
     const newCmd = {
       cmd: cmd,
       slot: slot,
       password: password,
+      dataContextProps: dataContextProps,
       sendMessage: sendMessage,
       sendCommand: sendCommand,
       addChat: addChat,
       addStatus: addStatus,
     }
-    setCmdQueue((prev) => [...prev, newCmd])
+    enqueueCommand(newCmd)
   }
+
+  useEffect(() => {
+    if (loggedIn) {
+      setLoginStarted(false)
+    }
+  }, [loggedIn])
 
   useEffect(() => {
     const details = localStorage.getItem(KEY)
@@ -100,9 +123,8 @@ function Home() {
       setLoginDetails(JSON.parse(details))
     }
 
-    db.player.clear()
-    db.archipelago.clear()
-  }, [])
+    resetData()
+  }, [resetData])
 
   useEffect(() => {
     // If we haven't tried to login yet, don't create any websockets
@@ -139,6 +161,9 @@ function Home() {
                 setIsLoading={setIsLoading}
                 loggedIn={loggedIn}
                 setLoggedIn={setLoggedIn}
+                setLoginStarted={setLoginStarted}
+                sessionId={connectionSession.current}
+                isCurrentSession={isCurrentSession}
                 password={login.password}
                 setReadyState={handleSetReadyState}
                 setConnError={setConnError}
@@ -162,15 +187,30 @@ function Home() {
   }, [loginDetails, isLoading, loggedIn])
 
   const logout = () => {
+    connectionSession.current += 1
+    acceptingCommands.current = false
+    clearQueue()
     childRefs.current.forEach((child) => child.getWebSocket()?.close())
     setLoggedIn(false)
+    setLoginStarted(false)
     setIsLoading(false)
     setConnError('')
+    setConnections({})
     handleSetLoginDetails([])
     setChatMessages([])
     setStatusMessages([])
-    db.player.clear()
-    db.archipelago.clear()
+    resetData()
+  }
+
+  const startLogin = (loading: boolean) => {
+    if (loading) {
+      connectionSession.current += 1
+      clearQueue()
+      resetData()
+      acceptingCommands.current = true
+      setLoginStarted(true)
+    }
+    setIsLoading(loading)
   }
 
   const sendMessage = (message: string) => {
@@ -229,14 +269,14 @@ function Home() {
     }
   }
 
-  if (players?.length === 0 || !loggedIn) {
+  if (players.length === 0 || !loggedIn) {
     return (
       <>
         {Object.values(connections).map((conns) => conns.element)}
         <Login
           setLoginDetails={handleSetLoginDetails}
-          setIsLoading={setIsLoading}
-          isLoading={isLoading}
+          setIsLoading={startLogin}
+          isLoading={loginStarted && !loggedIn}
           connectionError={connError}
         />
       </>

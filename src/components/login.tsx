@@ -46,7 +46,7 @@ type LoginValues = yup.InferType<typeof loginSchema>
 interface LoginProps {
   setLoginDetails: React.Dispatch<React.SetStateAction<LoginDetails[]>>
   isLoading: boolean
-  setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setIsLoading: (loading: boolean) => void
   connectionError: string
 }
 

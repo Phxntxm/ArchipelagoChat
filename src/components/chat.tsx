@@ -1,4 +1,4 @@
-import { db } from '#/db'
+import { useDataContext } from '#/data'
 import { isCommand, type ChatMessage } from '#/utils'
 import SendIcon from '@mui/icons-material/Send'
 import Box from '@mui/material/Box'
@@ -7,21 +7,17 @@ import List from '@mui/material/List'
 import ListItem from '@mui/material/ListItem'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { parseFilterSettings, type FilterSettings } from './chatFilterSettings'
 
 const KEY = 'AP-filter-settings'
+const MAX_VISIBLE_MESSAGES = 50
 
 interface ChatProps {
   messages: ChatMessage[]
   placeholder: string
   tabIndex: number
   sendMessage: (arg0: string) => void
-}
-
-interface FilterSettings {
-  filterCommands: boolean
-  filterOthersItems: boolean
 }
 
 export function Chat({
@@ -40,42 +36,45 @@ export function Chat({
   const [filterSettings, setFilterSettings] = useState<FilterSettings>({
     filterCommands: false,
     filterOthersItems: false,
+    filterJoinLeaves: false,
   })
-  const [filteredMessages, setFilteredMessages] = useState<ChatMessage[]>([])
-  const players = useLiveQuery(() =>
-    db.player.filter((p) => p.logged_in).toArray(),
-  )
-  const playerNames = players?.map((p) => p.name)
-
-  const isMe = (name: string) => {
-    if (playerNames) {
-      return playerNames.includes(name)
-    } else return false
-  }
+  const { data } = useDataContext()
 
   useEffect(() => {
     const saved = localStorage.getItem(KEY)
 
     if (saved) {
-      setFilterSettings(JSON.parse(saved))
+      setFilterSettings(parseFilterSettings(saved))
     }
 
-    window.addEventListener('storage', () => {
+    const handleStorage = () => {
       const saved = localStorage.getItem(KEY)
       if (saved) {
-        setFilterSettings(JSON.parse(saved))
+        setFilterSettings(parseFilterSettings(saved))
       }
-    })
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
   }, [])
 
-  useEffect(() => {
-    const filtered = messages.filter((message) => {
+  const filteredMessages = useMemo(() => {
+    const playerNames = new Set(
+      data?.players
+        .filter((player) => player.logged_in)
+        .map((player) => player.name),
+    )
+    const isMe = (name: string) => playerNames.has(name)
+
+    return messages.slice(-MAX_VISIBLE_MESSAGES).filter((message) => {
       const match = message.message.match(/^([^ ]*): (.*)/)
       const text = match ? match[2] : message.message
       const name = match ? match[1] : ''
 
-      const foundOwnItem = text.match(/^(.*) has found their (.*) \((.*)\)$/)
-      const foundOtherItem = text.match(/^(.*) sent (.*) \((.*)\) to (.*)$/)
+      const foundOwnItem = text.match(/^(.*) found their (.*) \((.*)\)$/)
+      const foundOtherItem = text.match(/^(.*) sent (.*) to (.*) \((.*)\)$/)
+      const join = text.match(/^(.*) has joined! \(Team \d+\)$/)
+      const part = text.match(/^(.*) has disconnected.$/)
 
       if (isCommand(text) && !isMe(name) && filterSettings.filterCommands) {
         return false
@@ -83,22 +82,19 @@ export function Chat({
         return isMe(foundOwnItem[1])
       } else if (foundOtherItem && filterSettings.filterOthersItems) {
         return isMe(foundOtherItem[4])
+      } else if ((join || part) && filterSettings.filterJoinLeaves) {
+        return false
       }
 
       return true
     })
-
-    setFilteredMessages(filtered)
-  }, [messages, filterSettings])
+  }, [data?.players, filterSettings, messages])
 
   useEffect(() => {
     const list = messagesListRef.current
     if (!list) return
 
-    list.scrollTo({
-      top: list.scrollHeight - list.clientHeight,
-      behavior: 'smooth',
-    })
+    list.scrollTop = list.scrollHeight
   }, [filteredMessages])
 
   return (
