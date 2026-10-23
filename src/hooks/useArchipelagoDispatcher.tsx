@@ -62,6 +62,7 @@ function handleRoomInfo(handler: CommandHandler<RoomInfoCmd>) {
     id: ID,
     room_games: handler.cmd.games,
     datapackage_checksums: handler.cmd.datapackage_checksums,
+    hint_cost: handler.cmd.hint_cost,
   })
 
   handler.sendCommand(
@@ -127,8 +128,9 @@ function handleConnected(
             handler.cmd.missing_locations.includes(l.id),
         )
 
-        // If they don't exist but are not the one we're connecting with, just add default info
+        // If they don't exist in our data yet
         if (existingPlayer === undefined) {
+          // If they don't exist but are not the one we're connecting with, just add default info
           if (slotId !== handler.cmd.slot.toString()) {
             return {
               id: playerId,
@@ -169,7 +171,8 @@ function handleConnected(
             }
           }
         }
-        // If they do exist... AND ONLY IF IT MATCHES THE CONNECTION, update with the command's info
+        // If they do exist... and it matches the connection's info, update with the command's info
+        //  This happens when we connect with multiple slots
         else if (slotId === handler.cmd.slot.toString()) {
           return {
             ...existingPlayer,
@@ -183,6 +186,8 @@ function handleConnected(
             }),
             hint_points: handler.cmd.hint_points,
           }
+        } else {
+          return existingPlayer
         }
       })
       .filter((player) => player !== undefined)

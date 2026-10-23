@@ -1,5 +1,6 @@
-import { useDataContext } from '#/data'
 import type { ClientGame } from '#/data'
+import { useDataContext } from '#/data'
+import { getHintCost } from '#/utils'
 import Autocomplete from '@mui/material/Autocomplete'
 import Button from '@mui/material/Button'
 import Paper from '@mui/material/Paper'
@@ -31,6 +32,8 @@ interface AutocompleteOption {
   game: string
   slot: string
   status: TrackedItem
+  hint_cost: number
+  point_total: number
 }
 
 export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
@@ -49,7 +52,7 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
     archipelago?.games?.filter((game) =>
       players.map((p) => p.game).includes(game.name),
     ) ?? ([] as ClientGame[])
-  const [selectedValues, setSelectedValues] = useState<AutocompleteOption[]>([])
+  const [selectedValues, setSelectedValues] = useState<string[]>([])
   const { play } = useSound('notification/completed')
 
   useEffect(() => {
@@ -57,7 +60,7 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
   }, [])
 
   useEffect(() => {
-    const filtered = selectedValues.filter((value) => {
+    const filtered = selectedItems.filter((value) => {
       // If it's been found previously, I don't care
       if (value.status === TrackedItem.Found) {
         return false
@@ -85,6 +88,8 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
     .map((game) =>
       Object.entries(game.item_name_to_id).map(([name, id]) => {
         const itemId = id.toString()
+        const player = players.find((p) => p.game === game.name)
+
         return {
           label: name,
           id: itemId,
@@ -92,16 +97,20 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
             ? TrackedItem.Found
             : TrackedItem.Waiting,
           game: game.name,
-          slot: players.find((p) => p.game === game.name)?.name ?? 'Unknown',
+          slot: player?.name ?? 'Unknown',
+          hint_cost:
+            archipelago && player ? getHintCost(archipelago, player) : 10,
+          point_total: player?.hint_points ?? 0,
         }
       }),
     )
     .flat()
+  const selectedItems = items.filter((item) => selectedValues.includes(item.id))
   const sendHint = (item: string, slot: string) => {
     sendMessageToSlot(`!hint ${item}`, slot)
   }
   const handleNewSelection = (items: AutocompleteOption[]) => {
-    setSelectedValues(items)
+    setSelectedValues(items.map((item) => item.id))
     localStorage.setItem(KEY, JSON.stringify(items))
   }
 
@@ -110,18 +119,18 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
       <Autocomplete
         sx={{ margin: '10px' }}
         multiple
-        value={selectedValues}
+        value={selectedItems}
         autoHighlight
         getOptionDisabled={(option) =>
-          selectedValues.length >= MAX_SELECTIONS &&
-          !selectedValues.includes(option)
+          selectedItems.length >= MAX_SELECTIONS &&
+          !selectedItems.includes(option)
         }
         onChange={(_, newValue) => handleNewSelection(newValue)}
         options={items}
         getOptionKey={(option) => option.id}
-        renderInput={(params) => <TextField {...params} label="Track" />}
+        renderInput={(params) => <TextField {...params} label={`Track`} />}
       />
-      {selectedValues.length > 0 && (
+      {selectedItems.length > 0 && (
         <TableContainer component={Paper} sx={{ maxHeight: 440 }}>
           <Table stickyHeader>
             <TableHead>
@@ -133,9 +142,11 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
               </TableRow>
             </TableHead>
             <TableBody>
-              {selectedValues.map((value) => (
+              {selectedItems.map((value) => (
                 <TableRow hover key={value.id}>
-                  <TableCell>{value.label}</TableCell>
+                  <TableCell>
+                    {value.label} ({value.point_total}/{value.hint_cost})
+                  </TableCell>
                   <TableCell>{value.game}</TableCell>
                   <TableCell>
                     {value.status == TrackedItem.Found ? (

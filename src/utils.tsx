@@ -318,6 +318,7 @@ function getLocationsForGame(
   return []
 }
 
+// Just used as an ID inside a mapping - does not matter if secure or not
 function socketIdentifier(
   url: string,
   port: number | string,
@@ -390,6 +391,12 @@ function getNameForId(
   }
 
   return undefined
+}
+
+function getHintCost(archipelago: Archipelago, player: Player): number {
+  return Math.floor(
+    Math.max(1, (archipelago.hint_cost ?? 1) * 0.01 * player.locations.length),
+  )
 }
 
 interface ChatMessage {
@@ -510,8 +517,9 @@ function typographyItemInfo(
 
 export {
   assert,
-  getInitializedData,
   ConnectionStatus,
+  getHintCost,
+  getInitializedData,
   getLocationsForGame,
   isChat,
   isCommand,
