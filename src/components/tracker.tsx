@@ -59,6 +59,30 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
     localStorage.setItem(KEY, JSON.stringify([]))
   }, [])
 
+  const itemNumbers = receivedItems.map((item) => item.item.toString())
+  const items = games
+    .map((game) =>
+      Object.entries(game.item_name_to_id).map(([name, id]) => {
+        const itemId = id.toString()
+        const player = players.find((p) => p.game === game.name)
+
+        return {
+          label: name,
+          id: itemId,
+          status: itemNumbers.includes(itemId)
+            ? TrackedItem.Found
+            : TrackedItem.Waiting,
+          game: game.name,
+          slot: player?.name ?? 'Unknown',
+          hint_cost:
+            archipelago && player ? getHintCost(archipelago, player) : 10,
+          point_total: player?.hint_points ?? 0,
+        }
+      }),
+    )
+    .flat()
+  const selectedItems = items.filter((item) => selectedValues.includes(item.id))
+
   useEffect(() => {
     const filtered = selectedItems.filter((value) => {
       // If it's been found previously, I don't care
@@ -83,29 +107,6 @@ export default function HintTracker({ sendMessageToSlot }: HintTrackerProps) {
     return 'Loading...'
   }
 
-  const itemNumbers = receivedItems.map((item) => item.item.toString())
-  const items = games
-    .map((game) =>
-      Object.entries(game.item_name_to_id).map(([name, id]) => {
-        const itemId = id.toString()
-        const player = players.find((p) => p.game === game.name)
-
-        return {
-          label: name,
-          id: itemId,
-          status: itemNumbers.includes(itemId)
-            ? TrackedItem.Found
-            : TrackedItem.Waiting,
-          game: game.name,
-          slot: player?.name ?? 'Unknown',
-          hint_cost:
-            archipelago && player ? getHintCost(archipelago, player) : 10,
-          point_total: player?.hint_points ?? 0,
-        }
-      }),
-    )
-    .flat()
-  const selectedItems = items.filter((item) => selectedValues.includes(item.id))
   const sendHint = (item: string, slot: string) => {
     sendMessageToSlot(`!hint ${item}`, slot)
   }
